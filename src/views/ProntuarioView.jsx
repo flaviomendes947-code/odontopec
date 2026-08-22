@@ -1,24 +1,68 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Plus, User, Search, X, Check, ChevronRight, Smile, AlertTriangle, ArrowLeft, Stethoscope,
+  Pencil, Loader2,
 } from "lucide-react";
 import { S } from "../styles.js";
-import { fmtDate, todayISO, calcAge, uid } from "../lib/utils.js";
+import { fmtDate, todayISO, calcAge } from "../lib/utils.js";
 import {
   TOOTH_CONDITIONS, PROCEDURE_TO_CONDITION, PROCEDURE_LABELS, UPPER_TEETH, LOWER_TEETH,
 } from "../constants.js";
 import {
-  ViewHeader, SectionLabel, EmptyState, Field, ModalShell, ModalFooter, NoticeBanner,
+  ViewHeader, SectionLabel, EmptyState, Field, ModalShell, ModalFooter,
 } from "../components/Shared.jsx";
+import { supabase } from "../lib/supabaseClient.js";
 
 export default function ProntuarioView({
-  patients, records, setRecords, odontogramas, setOdontogramas,
-  appointments, activePatientId, setActivePatientId, notify,
+  patients, appointments, activePatientId, setActivePatientId, notify, usuario,
 }) {
   const [query, setQuery] = useState("");
-  const [newRecordOpen, setNewRecordOpen] = useState(false);
+  const [recordModal, setRecordModal] = useState(null); // { correcaoDe: entrada | null } | null
+  const [loading, setLoading] = useState(false);
+  const [entradas, setEntradas] = useState([]);
+  const [eventos, setEventos] = useState([]);
 
   const patient = patients.find((p) => p.id === activePatientId);
+
+  const loadProntuario = useCallback(async () => {
+    if (!patient) return;
+    setLoading(true);
+    const [{ data: e, error: eErr }, { data: ev, error: evErr }] = await Promise.all([
+      supabase
+        .from("prontuario_entradas")
+        .select("*, prontuario_procedimentos(*)")
+        .eq("paciente_id", patient.id)
+        .order("data", { ascending: false })
+        .order("criado_em", { ascending: false }),
+      supabase
+        .from("odontograma_eventos")
+        .select("*")
+        .eq("paciente_id", patient.id)
+        .order("criado_em", { ascending: true }),
+    ]);
+    if (eErr || evErr) notify(`Erro ao carregar prontuário: ${(eErr || evErr).message}`);
+    setEntradas(e || []);
+    setEventos(ev || []);
+    setLoading(false);
+  }, [patient, notify]);
+
+  useEffect(() => {
+    loadProntuario();
+  }, [loadProntuario]);
+
+  const odontograma = useMemo(() => {
+    const state = {};
+    eventos.forEach((ev) => {
+      state[ev.dente] = { condicao: ev.condicao, obs: ev.observacao || "" };
+    });
+    return state;
+  }, [eventos]);
+
+  const entradasCorrigidas = useMemo(() => {
+    const ids = new Set();
+    entradas.forEach((e) => { if (e.entrada_original_id) ids.add(e.entrada_original_id); });
+    return ids;
+  }, [entradas]);
 
   if (!patient) {
     const filtered = patients.filter((p) => p.nome.toLowerCase().includes(query.trim().toLowerCase()));
@@ -46,28 +90,73 @@ export default function ProntuarioView({
     );
   }
 
-  const odontograma = odontogramas[patient.id] || {};
-  const patientRecords = records
-    .filter((r) => r.pacienteId === patient.id)
-    .sort((a, b) => b.data.localeCompare(a.data) || b.criadoEm.localeCompare(a.criadoEm));
-
-  const updateOdontograma = (toothNumber, condition, obs) => {
-    setOdontogramas({
-      ...odontogramas,
-      [patient.id]: { ...odontograma, [toothNumber]: { condicao: condition, obs: obs || "" } },
+  const updateOdontograma = async (toothNumber, condition, obs) => {
+    const { error } = await supabase.from("odontograma_eventos").insert({
+      paciente_id: patient.id,
+      dente: toothNumber,
+      condicao: condition,
+      observacao: obs || null,
+      criado_por: usuario.id,
     });
+    if (error) {
+      notify(`Erro ao atualizar odontograma: ${error.message}`);
+      return;
+    }
+    await loadProntuario();
   };
 
-  const saveRecord = (record) => {
-    setRecords([...records, record]);
-    let next = { ...odontograma };
-    record.procedimentos.forEach((proc) => {
-      const cond = PROCEDURE_TO_CONDITION[proc.procedimento];
-      if (cond) next[proc.dente] = { condicao: cond, obs: proc.obs || "" };
-    });
-    setOdontogramas({ ...odontogramas, [patient.id]: next });
-    setNewRecordOpen(false);
-    notify("Atendimento registrado (ainda não persistido — chega na Fase 2)");
+  const saveRecord = async (form, correcaoDeId) => {
+    const { data: entrada, error: e1 } = await supabase
+      .from("prontuario_entradas")
+      .insert({
+        paciente_id: patient.id,
+        agendamento_id: form.agendamento_id || null,
+        entrada_original_id: correcaoDeId || null,
+        data: form.data,
+        queixa_principal: form.queixa_principal || null,
+        anamnese: form.anamnese || null,
+        prescricao: form.prescricao || null,
+        observacoes: form.observacoes || null,
+        criado_por: usuario.id,
+      })
+      .select()
+      .single();
+
+    if (e1) {
+      notify(`Erro ao salvar atendimento: ${e1.message}`);
+      return;
+    }
+
+    if (form.procedimentos.length > 0) {
+      const { error: e2 } = await supabase.from("prontuario_procedimentos").insert(
+        form.procedimentos.map((p) => ({
+          prontuario_entrada_id: entrada.id,
+          dente: p.dente,
+          procedimento: p.procedimento,
+          observacao: p.observacao || null,
+        }))
+      );
+      if (e2) notify(`Atendimento salvo, mas houve erro ao registrar procedimentos: ${e2.message}`);
+
+      const odontoRows = form.procedimentos
+        .filter((p) => PROCEDURE_TO_CONDITION[p.procedimento])
+        .map((p) => ({
+          paciente_id: patient.id,
+          dente: p.dente,
+          condicao: PROCEDURE_TO_CONDITION[p.procedimento],
+          observacao: p.observacao || null,
+          prontuario_entrada_id: entrada.id,
+          criado_por: usuario.id,
+        }));
+      if (odontoRows.length > 0) {
+        const { error: e3 } = await supabase.from("odontograma_eventos").insert(odontoRows);
+        if (e3) notify(`Atendimento salvo, mas houve erro ao atualizar o odontograma: ${e3.message}`);
+      }
+    }
+
+    setRecordModal(null);
+    notify(correcaoDeId ? "Correção registrada no prontuário" : "Atendimento registrado no prontuário");
+    await loadProntuario();
   };
 
   return (
@@ -75,12 +164,6 @@ export default function ProntuarioView({
       <button style={S.backBtn} onClick={() => setActivePatientId(null)}>
         <ArrowLeft size={14} /> Todos os pacientes
       </button>
-
-      <NoticeBanner>
-        Prontuário e odontograma ainda não são salvos no banco — essa persistência
-        (com histórico append-only, exigido pelo CFO) entra na Fase 2. Por enquanto,
-        os dados somem ao recarregar a página.
-      </NoticeBanner>
 
       <div style={S.patientHeader}>
         <div style={S.patientHeaderAvatar}>{(patient.nome || "?").trim().charAt(0).toUpperCase()}</div>
@@ -95,45 +178,64 @@ export default function ProntuarioView({
             <div style={{ ...S.allergyPill, marginTop: 8 }}><AlertTriangle size={12} /> Alergia: {patient.alergias}</div>
           )}
         </div>
-        <button style={S.primaryBtn} onClick={() => setNewRecordOpen(true)}>
+        <button style={S.primaryBtn} onClick={() => setRecordModal({ correcaoDe: null })}>
           <Plus size={16} /> Novo atendimento
         </button>
       </div>
 
-      <SectionLabel icon={Smile} text="Odontograma" />
-      <Odontogram odontograma={odontograma} onChange={updateOdontograma} />
-
-      <SectionLabel icon={Stethoscope} text="Histórico de atendimentos" />
-      {patientRecords.length === 0 ? (
-        <EmptyState icon={Stethoscope} title="Nenhum atendimento registrado" text="Clique em “Novo atendimento” para iniciar o histórico deste paciente." />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {patientRecords.map((r) => <RecordCard key={r.id} record={r} />)}
+      {loading ? (
+        <div style={{ display: "flex", justifyContent: "center", padding: 40 }}>
+          <Loader2 size={20} color="#2C6E68" />
         </div>
+      ) : (
+        <>
+          <SectionLabel icon={Smile} text="Odontograma" />
+          <Odontogram odontograma={odontograma} onChange={updateOdontograma} />
+
+          <SectionLabel icon={Stethoscope} text="Histórico de atendimentos" />
+          {entradas.length === 0 ? (
+            <EmptyState icon={Stethoscope} title="Nenhum atendimento registrado" text="Clique em “Novo atendimento” para iniciar o histórico deste paciente." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {entradas.map((r) => (
+                <RecordCard
+                  key={r.id}
+                  record={r}
+                  corrigida={entradasCorrigidas.has(r.id)}
+                  onCorrect={() => setRecordModal({ correcaoDe: r })}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
 
-      {newRecordOpen && (
+      {recordModal && (
         <NewRecordModal
           patient={patient}
           appointments={appointments.filter((a) => a.paciente_id === patient.id && a.status !== "cancelado")}
-          onCancel={() => setNewRecordOpen(false)}
-          onSave={saveRecord}
+          correcaoDe={recordModal.correcaoDe}
+          onCancel={() => setRecordModal(null)}
+          onSave={(form) => saveRecord(form, recordModal.correcaoDe?.id)}
         />
       )}
     </div>
   );
 }
 
-function RecordCard({ record }) {
+function RecordCard({ record, corrigida, onCorrect }) {
   const [open, setOpen] = useState(false);
+  const procedimentos = record.prontuario_procedimentos || [];
   return (
     <div style={S.recordCard}>
       <button style={S.recordCardHead} onClick={() => setOpen(!open)}>
         <div style={S.recordDateBadge}>{fmtDate(record.data)}</div>
         <div style={{ flex: 1, textAlign: "left" }}>
-          <div style={S.recordTitle}>{record.queixaPrincipal || "Atendimento clínico"}</div>
+          <div style={S.recordTitle}>{record.queixa_principal || "Atendimento clínico"}</div>
           <div style={S.recordSub}>
-            {record.procedimentos.length} procedimento{record.procedimentos.length === 1 ? "" : "s"} registrado{record.procedimentos.length === 1 ? "" : "s"}
+            {procedimentos.length} procedimento{procedimentos.length === 1 ? "" : "s"} registrado{procedimentos.length === 1 ? "" : "s"}
+            {record.entrada_original_id && " · correção de entrada anterior"}
+            {corrigida && " · corrigida por uma entrada mais recente"}
           </div>
         </div>
         <ChevronRight size={16} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
@@ -141,12 +243,12 @@ function RecordCard({ record }) {
       {open && (
         <div style={S.recordBody}>
           {record.anamnese && <RecordField label="Anamnese / queixa">{record.anamnese}</RecordField>}
-          {record.procedimentos.length > 0 && (
+          {procedimentos.length > 0 && (
             <RecordField label="Procedimentos realizados">
               <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-                {record.procedimentos.map((p, i) => (
-                  <li key={i} style={{ marginBottom: 3 }}>
-                    Dente {p.dente} — {PROCEDURE_LABELS[p.procedimento]}{p.obs ? ` (${p.obs})` : ""}
+                {procedimentos.map((p) => (
+                  <li key={p.id} style={{ marginBottom: 3 }}>
+                    Dente {p.dente} — {PROCEDURE_LABELS[p.procedimento]}{p.observacao ? ` (${p.observacao})` : ""}
                   </li>
                 ))}
               </ul>
@@ -154,6 +256,11 @@ function RecordCard({ record }) {
           )}
           {record.prescricao && <RecordField label="Prescrição">{record.prescricao}</RecordField>}
           {record.observacoes && <RecordField label="Observações">{record.observacoes}</RecordField>}
+          {!corrigida && (
+            <button style={{ ...S.secondaryBtn, marginTop: 4 }} onClick={onCorrect}>
+              <Pencil size={13} /> Corrigir esta entrada
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -168,33 +275,44 @@ function RecordField({ label, children }) {
   );
 }
 
-function emptyRecord(pacienteId) {
+function emptyRecordForm(correcaoDe) {
+  if (correcaoDe) {
+    return {
+      agendamento_id: correcaoDe.agendamento_id || "",
+      data: correcaoDe.data,
+      queixa_principal: correcaoDe.queixa_principal || "",
+      anamnese: correcaoDe.anamnese || "",
+      procedimentos: (correcaoDe.prontuario_procedimentos || []).map((p) => ({
+        dente: p.dente, procedimento: p.procedimento, observacao: p.observacao || "",
+      })),
+      prescricao: correcaoDe.prescricao || "",
+      observacoes: correcaoDe.observacoes || "",
+    };
+  }
   return {
-    id: uid(),
-    pacienteId,
-    agendamentoId: "",
+    agendamento_id: "",
     data: todayISO(),
-    queixaPrincipal: "",
+    queixa_principal: "",
     anamnese: "",
     procedimentos: [],
     prescricao: "",
     observacoes: "",
-    criadoEm: new Date().toISOString(),
   };
 }
 
-function NewRecordModal({ patient, appointments, onCancel, onSave }) {
-  const [form, setForm] = useState(emptyRecord(patient.id));
+function NewRecordModal({ patient, appointments, correcaoDe, onCancel, onSave }) {
+  const [form, setForm] = useState(emptyRecordForm(correcaoDe));
   const [procDente, setProcDente] = useState(UPPER_TEETH[0]);
   const [procTipo, setProcTipo] = useState("restauracao");
   const [procObs, setProcObs] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
   const addProc = () => {
     setForm({
       ...form,
-      procedimentos: [...form.procedimentos, { dente: procDente, procedimento: procTipo, obs: procObs }],
+      procedimentos: [...form.procedimentos, { dente: procDente, procedimento: procTipo, observacao: procObs }],
     });
     setProcObs("");
   };
@@ -202,16 +320,33 @@ function NewRecordModal({ patient, appointments, onCancel, onSave }) {
     setForm({ ...form, procedimentos: form.procedimentos.filter((_, i) => i !== idx) });
   };
 
-  const valid = form.data && (form.queixaPrincipal.trim() || form.procedimentos.length > 0);
+  const valid = form.data && (form.queixa_principal.trim() || form.procedimentos.length > 0);
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onSave(form);
+    setSaving(false);
+  };
 
   return (
-    <ModalShell title={`Novo atendimento — ${patient.nome}`} onCancel={onCancel} width={620}>
+    <ModalShell
+      title={correcaoDe ? `Corrigir atendimento de ${fmtDate(correcaoDe.data)} — ${patient.nome}` : `Novo atendimento — ${patient.nome}`}
+      onCancel={onCancel}
+      width={620}
+    >
+      {correcaoDe && (
+        <p style={{ fontSize: 12.5, color: "#5B6F6C", background: "#EFF3F1", borderRadius: 8, padding: "9px 12px", margin: "0 0 14px" }}>
+          Isso cria uma <strong>nova entrada</strong> no prontuário referenciando a original — a entrada anterior
+          permanece no histórico, como exige o Conselho Federal de Odontologia. Os campos abaixo já vêm
+          preenchidos com os dados da entrada original; ajuste o que precisa ser corrigido.
+        </p>
+      )}
       <div style={S.formGrid2}>
         <Field label="Data do atendimento *">
           <input type="date" style={S.input} value={form.data} onChange={set("data")} />
         </Field>
         <Field label="Agendamento vinculado">
-          <select style={S.input} value={form.agendamentoId} onChange={set("agendamentoId")}>
+          <select style={S.input} value={form.agendamento_id} onChange={set("agendamento_id")}>
             <option value="">Nenhum / avulso</option>
             {appointments.map((a) => (
               <option key={a.id} value={a.id}>{fmtDate(a.data)} {a.hora?.slice(0, 5)} — {a.tipo}</option>
@@ -219,7 +354,7 @@ function NewRecordModal({ patient, appointments, onCancel, onSave }) {
           </select>
         </Field>
         <Field label="Queixa principal" full>
-          <input style={S.input} value={form.queixaPrincipal} onChange={set("queixaPrincipal")} placeholder="Ex: dor no dente 26 ao mastigar" />
+          <input style={S.input} value={form.queixa_principal} onChange={set("queixa_principal")} placeholder="Ex: dor no dente 26 ao mastigar" />
         </Field>
         <Field label="Anamnese / exame clínico" full>
           <textarea style={{ ...S.input, minHeight: 70 }} value={form.anamnese} onChange={set("anamnese")} />
@@ -248,7 +383,7 @@ function NewRecordModal({ patient, appointments, onCancel, onSave }) {
             {form.procedimentos.map((p, i) => (
               <div key={i} style={S.procListItem}>
                 <span style={S.procToothTag}>{p.dente}</span>
-                <span style={{ flex: 1 }}>{PROCEDURE_LABELS[p.procedimento]}{p.obs ? ` — ${p.obs}` : ""}</span>
+                <span style={{ flex: 1 }}>{PROCEDURE_LABELS[p.procedimento]}{p.observacao ? ` — ${p.observacao}` : ""}</span>
                 <button type="button" style={S.procRemoveBtn} onClick={() => removeProc(i)}><X size={12} /></button>
               </div>
             ))}
@@ -265,7 +400,12 @@ function NewRecordModal({ patient, appointments, onCancel, onSave }) {
         </Field>
       </div>
 
-      <ModalFooter onCancel={onCancel} onSave={() => onSave(form)} disabled={!valid} saveLabel="Salvar atendimento" />
+      <ModalFooter
+        onCancel={onCancel}
+        onSave={handleSave}
+        disabled={!valid || saving}
+        saveLabel={correcaoDe ? "Salvar correção" : "Salvar atendimento"}
+      />
     </ModalShell>
   );
 }
