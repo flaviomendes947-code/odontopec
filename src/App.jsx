@@ -73,16 +73,32 @@ function AppShell({ usuario }) {
     loadAll();
   }, [loadAll]);
 
-  const savePatient = async (p) => {
+  const registerConsent = async (pacienteId, aceito) => {
+    if (!aceito) return;
+    await supabase.from("consentimentos").insert({
+      paciente_id: pacienteId,
+      tipo: "tratamento_dados",
+      aceito: true,
+      registrado_por: usuario.id,
+    });
+  };
+
+  const savePatient = async (p, consentimento) => {
     if (p.id) {
       const { id, criado_por, criado_em, atualizado_em, ...updates } = p;
       const { error } = await supabase.from("pacientes").update(updates).eq("id", id);
-      if (!error) await loadAll();
+      if (!error) {
+        await registerConsent(id, consentimento);
+        await loadAll();
+      }
       return { error };
     }
     const { id, ...insertData } = p;
-    const { error } = await supabase.from("pacientes").insert(insertData);
-    if (!error) await loadAll();
+    const { data, error } = await supabase.from("pacientes").insert(insertData).select().single();
+    if (!error) {
+      await registerConsent(data.id, consentimento);
+      await loadAll();
+    }
     return { error };
   };
 
