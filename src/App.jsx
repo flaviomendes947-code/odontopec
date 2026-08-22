@@ -45,8 +45,6 @@ function AppShell({ usuario }) {
   const [patients, setPatients] = useState([]);
   const [appointments, setAppointments] = useState([]);
   const [dentistas, setDentistas] = useState([]);
-  const [records, setRecords] = useState([]);
-  const [odontogramas, setOdontogramas] = useState({});
   const [tab, setTab] = useState("pacientes");
   const [activePatientId, setActivePatientId] = useState(null);
   const [toast, setToast] = useState(null);
@@ -169,14 +167,11 @@ function AppShell({ usuario }) {
         {tab === "prontuario" && (
           <ProntuarioView
             patients={patients}
-            records={records}
-            setRecords={setRecords}
-            odontogramas={odontogramas}
-            setOdontogramas={setOdontogramas}
             appointments={appointments}
             activePatientId={activePatientId}
             setActivePatientId={setActivePatientId}
             notify={notify}
+            usuario={usuario}
           />
         )}
       </main>
