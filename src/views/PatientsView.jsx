@@ -1,10 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Plus, User, Search, Pencil, Trash2, ChevronRight, Phone, Mail, AlertTriangle } from "lucide-react";
 import { S } from "../styles.js";
 import { calcAge, fmtDate } from "../lib/utils.js";
 import {
   ViewHeader, EmptyState, IconBtn, Field, ModalShell, ModalFooter, ConfirmDialog,
 } from "../components/Shared.jsx";
+import { supabase } from "../lib/supabaseClient.js";
 
 function emptyPatient(clinicaId, criadoPor) {
   return {
@@ -37,15 +38,16 @@ export default function PatientsView({ patients, onOpenChart, notify, usuario, s
   }, [patients, query]);
 
   const handleSave = async (p) => {
+    const { consentimento, ...patientData } = p;
     setSaving(true);
-    const { error } = await savePatient(p);
+    const { error } = await savePatient(patientData, consentimento);
     setSaving(false);
     if (error) {
       notify(`Erro ao salvar: ${error.message}`);
       return;
     }
     setEditing(null);
-    notify(p.id ? "Paciente atualizado" : "Paciente cadastrado");
+    notify(patientData.id ? "Paciente atualizado" : "Paciente cadastrado");
   };
 
   const handleDelete = async (id) => {
@@ -138,9 +140,28 @@ export default function PatientsView({ patients, onOpenChart, notify, usuario, s
 }
 
 function PatientModal({ patient, onCancel, onSave, saving }) {
-  const [form, setForm] = useState(patient);
+  const isNew = !patient.id;
+  const [form, setForm] = useState({ ...patient, consentimento: false });
+  const [consentAtual, setConsentAtual] = useState(isNew ? "novo" : null);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
-  const valid = form.nome.trim().length > 1;
+  const valid = form.nome.trim().length > 1 && (!isNew || form.consentimento);
+
+  useEffect(() => {
+    if (isNew) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("consentimentos")
+        .select("aceito, registrado_em")
+        .eq("paciente_id", patient.id)
+        .eq("tipo", "tratamento_dados")
+        .order("registrado_em", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!cancelled) setConsentAtual(data || "nenhum");
+    })();
+    return () => { cancelled = true; };
+  }, [isNew, patient.id]);
 
   return (
     <ModalShell title={patient.id ? "Editar paciente" : "Novo paciente"} onCancel={onCancel} width={560}>
@@ -168,6 +189,41 @@ function PatientModal({ patient, onCancel, onSave, saving }) {
         </Field>
         <Field label="Observações gerais" full>
           <textarea style={{ ...S.input, minHeight: 70, resize: "vertical" }} value={form.observacoes_gerais || ""} onChange={set("observacoes_gerais")} />
+        </Field>
+        <Field label={isNew ? "Consentimento LGPD *" : "Consentimento LGPD"} full>
+          {isNew ? (
+            <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, color: "#3E524E" }}>
+              <input
+                type="checkbox"
+                checked={form.consentimento}
+                onChange={(e) => setForm({ ...form, consentimento: e.target.checked })}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                O paciente (ou responsável legal) consentiu com o tratamento dos dados pessoais e de
+                saúde registrados neste sistema, conforme a LGPD.
+              </span>
+            </label>
+          ) : consentAtual === null ? (
+            <span style={{ fontSize: 12.5, color: "#8b968f" }}>Carregando…</span>
+          ) : consentAtual !== "nenhum" && consentAtual.aceito ? (
+            <span style={{ fontSize: 12.5, color: "#2C6E68" }}>
+              Registrado em {fmtDate((consentAtual.registrado_em || "").slice(0, 10))}
+            </span>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ fontSize: 12.5, color: "#A5402F" }}>Nenhum consentimento registrado.</span>
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, color: "#3E524E" }}>
+                <input
+                  type="checkbox"
+                  checked={form.consentimento}
+                  onChange={(e) => setForm({ ...form, consentimento: e.target.checked })}
+                  style={{ marginTop: 2 }}
+                />
+                <span>Registrar consentimento agora.</span>
+              </label>
+            </div>
+          )}
         </Field>
       </div>
       <ModalFooter onCancel={onCancel} onSave={() => onSave(form)} disabled={!valid || saving} />
