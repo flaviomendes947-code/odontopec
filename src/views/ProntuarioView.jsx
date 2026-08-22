@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Plus, User, Search, X, Check, ChevronRight, Smile, AlertTriangle, ArrowLeft, Stethoscope,
-  Pencil, Loader2,
+  Pencil, Loader2, Download, ShieldAlert,
 } from "lucide-react";
 import { S } from "../styles.js";
 import { fmtDate, todayISO, calcAge } from "../lib/utils.js";
@@ -9,7 +9,7 @@ import {
   TOOTH_CONDITIONS, PROCEDURE_TO_CONDITION, PROCEDURE_LABELS, UPPER_TEETH, LOWER_TEETH,
 } from "../constants.js";
 import {
-  ViewHeader, SectionLabel, EmptyState, Field, ModalShell, ModalFooter,
+  ViewHeader, SectionLabel, EmptyState, Field, ModalShell, ModalFooter, ConfirmDialog,
 } from "../components/Shared.jsx";
 import { supabase } from "../lib/supabaseClient.js";
 
@@ -159,11 +159,70 @@ export default function ProntuarioView({
     await loadProntuario();
   };
 
+  const handleExport = async () => {
+    const [{ data: ag }, { data: cons }] = await Promise.all([
+      supabase.from("agendamentos").select("*").eq("paciente_id", patient.id),
+      supabase.from("consentimentos").select("*").eq("paciente_id", patient.id),
+    ]);
+    const payload = {
+      paciente: patient,
+      consentimentos: cons || [],
+      agendamentos: ag || [],
+      prontuario_entradas: entradas,
+      odontograma_eventos: eventos,
+      exportado_em: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dados-${patient.nome.replace(/\s+/g, "_")}-${todayISO()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    await supabase.from("audit_log").insert({
+      usuario_id: usuario.id, acao: "exportacao_dados_lgpd", entidade: "paciente", entidade_id: patient.id,
+    });
+    notify("Dados exportados");
+  };
+
+  const [confirmDelecao, setConfirmDelecao] = useState(false);
+  const handleDeletionRequest = async () => {
+    const { error } = await supabase.from("audit_log").insert({
+      usuario_id: usuario.id, acao: "solicitacao_exclusao_lgpd", entidade: "paciente", entidade_id: patient.id,
+    });
+    setConfirmDelecao(false);
+    if (error) {
+      notify(`Erro ao registrar solicitação: ${error.message}`);
+      return;
+    }
+    notify("Solicitação de exclusão registrada — um administrador vai avaliar");
+  };
+
   return (
     <div>
       <button style={S.backBtn} onClick={() => setActivePatientId(null)}>
         <ArrowLeft size={14} /> Todos os pacientes
       </button>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <button style={S.secondaryBtn} onClick={handleExport}>
+          <Download size={14} /> Exportar dados (LGPD)
+        </button>
+        <button
+          style={{ ...S.secondaryBtn, color: "#C2503D", borderColor: "#C2503D" }}
+          onClick={() => setConfirmDelecao(true)}
+        >
+          <ShieldAlert size={14} /> Solicitar exclusão de dados
+        </button>
+      </div>
+
+      {confirmDelecao && (
+        <ConfirmDialog
+          text="Isso registra uma solicitação de exclusão de dados (LGPD) para avaliação do administrador. A exclusão não é feita automaticamente — dados clínicos precisam ser avaliados caso a caso antes de qualquer remoção, para não violar a obrigação de guarda do Conselho Federal de Odontologia."
+          onCancel={() => setConfirmDelecao(false)}
+          onConfirm={handleDeletionRequest}
+        />
+      )}
 
       <div style={S.patientHeader}>
         <div style={S.patientHeaderAvatar}>{(patient.nome || "?").trim().charAt(0).toUpperCase()}</div>
