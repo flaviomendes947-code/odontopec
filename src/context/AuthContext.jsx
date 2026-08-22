@@ -50,7 +50,10 @@ export function AuthProvider({ children }) {
   }, [loadUsuario]);
 
   const signIn = useCallback(async (email, password) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (!error && data.user) {
+      supabase.from("audit_log").insert({ usuario_id: data.user.id, acao: "login" });
+    }
     return error;
   }, []);
 
