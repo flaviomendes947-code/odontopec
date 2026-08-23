@@ -58,7 +58,7 @@ function AppShell({ usuario }) {
     const [{ data: p, error: pErr }, { data: a, error: aErr }, { data: d, error: dErr }] = await Promise.all([
       supabase.from("pacientes").select("*").order("nome"),
       supabase.from("agendamentos").select("*").order("data").order("hora"),
-      supabase.from("usuarios").select("id, nome").eq("papel", "dentista").order("nome"),
+      supabase.from("usuarios").select("id, nome").in("papel", ["dentista", "admin"]).order("nome"),
     ]);
     if (pErr || aErr || dErr) {
       notify(`Erro ao carregar dados: ${(pErr || aErr || dErr).message}`);
