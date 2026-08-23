@@ -111,9 +111,11 @@ export default function PatientsView({ patients, onOpenChart, notify, usuario, s
               {p.alergias && (
                 <div style={S.allergyPill}><AlertTriangle size={12} /> Alergia: {p.alergias}</div>
               )}
-              <button style={S.chartLinkBtn} onClick={() => onOpenChart(p.id)}>
-                Abrir prontuário <ChevronRight size={14} />
-              </button>
+              {usuario.papel !== "recepcao" && (
+                <button style={S.chartLinkBtn} onClick={() => onOpenChart(p.id)}>
+                  Abrir prontuário <ChevronRight size={14} />
+                </button>
+              )}
             </div>
           ))}
         </div>
