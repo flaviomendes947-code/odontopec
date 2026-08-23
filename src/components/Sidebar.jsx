@@ -7,7 +7,7 @@ export default function Sidebar({ tab, setTab }) {
   const items = [
     { id: "pacientes", label: "Pacientes", icon: User },
     { id: "agenda", label: "Agenda", icon: CalendarIcon },
-    { id: "prontuario", label: "Prontuário", icon: FileText },
+    ...(usuario?.papel !== "recepcao" ? [{ id: "prontuario", label: "Prontuário", icon: FileText }] : []),
   ];
   return (
     <aside style={S.sidebar}>
