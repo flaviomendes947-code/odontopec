@@ -129,7 +129,9 @@ export default function AgendaView({ patients, appointments, dentistas, onOpenCh
                       <option key={k} value={k}>{v.label}</option>
                     ))}
                   </select>
-                  <IconBtn title="Ver prontuário" onClick={() => onOpenChart(a.paciente_id)}><FileText size={14} /></IconBtn>
+                  {usuario.papel !== "recepcao" && (
+                    <IconBtn title="Ver prontuário" onClick={() => onOpenChart(a.paciente_id)}><FileText size={14} /></IconBtn>
+                  )}
                   <IconBtn title="Editar" onClick={() => setEditing(a)}><Pencil size={14} /></IconBtn>
                   <IconBtn title="Remover" danger onClick={() => handleRemove(a.id)}><Trash2 size={14} /></IconBtn>
                 </div>
