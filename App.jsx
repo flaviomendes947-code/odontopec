@@ -58,7 +58,7 @@ function AppShell({ usuario }) {
     const [{ data: p, error: pErr }, { data: a, error: aErr }, { data: d, error: dErr }] = await Promise.all([
       supabase.from("pacientes").select("*").order("nome"),
       supabase.from("agendamentos").select("*").order("data").order("hora"),
-      supabase.from("usuarios").select("id, nome").eq("papel", "dentista").order("nome"),
+      supabase.from("usuarios").select("id, nome").in("papel", ["dentista", "admin"]).order("nome"),
     ]);
     if (pErr || aErr || dErr) {
       notify(`Erro ao carregar dados: ${(pErr || aErr || dErr).message}`);
@@ -73,16 +73,32 @@ function AppShell({ usuario }) {
     loadAll();
   }, [loadAll]);
 
-  const savePatient = async (p) => {
+  const registerConsent = async (pacienteId, aceito) => {
+    if (!aceito) return;
+    await supabase.from("consentimentos").insert({
+      paciente_id: pacienteId,
+      tipo: "tratamento_dados",
+      aceito: true,
+      registrado_por: usuario.id,
+    });
+  };
+
+  const savePatient = async (p, consentimento) => {
     if (p.id) {
       const { id, criado_por, criado_em, atualizado_em, ...updates } = p;
       const { error } = await supabase.from("pacientes").update(updates).eq("id", id);
-      if (!error) await loadAll();
+      if (!error) {
+        await registerConsent(id, consentimento);
+        await loadAll();
+      }
       return { error };
     }
     const { id, ...insertData } = p;
-    const { error } = await supabase.from("pacientes").insert(insertData);
-    if (!error) await loadAll();
+    const { data, error } = await supabase.from("pacientes").insert(insertData).select().single();
+    if (!error) {
+      await registerConsent(data.id, consentimento);
+      await loadAll();
+    }
     return { error };
   };
 
