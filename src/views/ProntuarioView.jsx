@@ -237,9 +237,11 @@ export default function ProntuarioView({
             <div style={{ ...S.allergyPill, marginTop: 8 }}><AlertTriangle size={12} /> Alergia: {patient.alergias}</div>
           )}
         </div>
-        <button style={S.primaryBtn} onClick={() => setRecordModal({ correcaoDe: null })}>
-          <Plus size={16} /> Novo atendimento
-        </button>
+        {usuario.papel !== "recepcao" && (
+          <button style={S.primaryBtn} onClick={() => setRecordModal({ correcaoDe: null })}>
+            <Plus size={16} /> Novo atendimento
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -261,6 +263,7 @@ export default function ProntuarioView({
                   key={r.id}
                   record={r}
                   corrigida={entradasCorrigidas.has(r.id)}
+                  podeCorrigir={usuario.papel !== "recepcao"}
                   onCorrect={() => setRecordModal({ correcaoDe: r })}
                 />
               ))}
@@ -282,7 +285,7 @@ export default function ProntuarioView({
   );
 }
 
-function RecordCard({ record, corrigida, onCorrect }) {
+function RecordCard({ record, corrigida, podeCorrigir, onCorrect }) {
   const [open, setOpen] = useState(false);
   const procedimentos = record.prontuario_procedimentos || [];
   return (
@@ -315,7 +318,7 @@ function RecordCard({ record, corrigida, onCorrect }) {
           )}
           {record.prescricao && <RecordField label="Prescrição">{record.prescricao}</RecordField>}
           {record.observacoes && <RecordField label="Observações">{record.observacoes}</RecordField>}
-          {!corrigida && (
+          {!corrigida && podeCorrigir && (
             <button style={{ ...S.secondaryBtn, marginTop: 4 }} onClick={onCorrect}>
               <Pencil size={13} /> Corrigir esta entrada
             </button>
